@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"gopeerjs-server/peerhub"
 	"strings"
-	"time"
 	"encoding/json"
+	"time"
 )
 
 func IdHandler(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub, log *logrus.Logger, debug bool) {
 	var handlerName = "IdHandler"
 
-	uuid := hub.GeneratePeerId()
+	uuid := peerhub.GeneratePeerId()
 	if(debug) {
 		log.Infof("[%s] generate %s", handlerName, uuid)
 	}
@@ -35,7 +35,7 @@ func StartHandler(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub, logger *logru
 	ctx.Response.Header.Set("Content-type", "application/octet-stream")
 	ctx.Response.SetStatusCode(fasthttp.StatusOK)
 
-	_, err := hub.CheckKey(key)
+	_, err := peerhub.CheckKey(key)
 	if err != nil {
 		ctx.SetBodyString(peerhub.NewHttpErrorMessage().String())
 		return
@@ -61,18 +61,12 @@ func StartHandler(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub, logger *logru
 
 	if client.Token == token {
 		defer func(){
+			time.Sleep(25*time.Millisecond)
 			if !client.IsConnected() {
 				logger.Infof("[%s] remove peer. peer=%+v", client)
-
 				hub.RemovePeer(client.Id)
 			}
 		}()
-
-		defMessages, _ := hub.GetLostMessage(client.Id)
-		if len(defMessages) > 0 {
-			var messageList = peerhub.MessageList(defMessages)
-			body += messageList.String()
-		}
 	} else {
 		body += peerhub.NewHttpErrorMessage().String()
 	}
@@ -97,25 +91,12 @@ func CommonHandle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub, logger *logru
 		ctx.SetStatusCode(fasthttp.StatusBadRequest)
 	}
 
-	if _, err := hub.CheckKey(key); err != nil {
-		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-		return
-	}
-
-	client := hub.GetPeer(id)
-	if client == nil {
-		if retry {
-			ctx.SetStatusCode(fasthttp.StatusUnauthorized)
-			return
-		}
-		time.Sleep(25*time.Millisecond)
-		CommonHandle(ctx, hub, logger, debug, true)
-	}
-
-	if client.Token != token {
+	if _, err := peerhub.CheckKey(key); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
 		return
 	}
 
 	hub.TransmitMessage(&message)
+
+	ctx.SetStatusCode(fasthttp.StatusOK)
 }

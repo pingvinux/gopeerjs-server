@@ -32,6 +32,10 @@ func (ml *MessageList) String() string {
 	return string(bytes)
 }
 
+func NewExpireMessage(src, dst string) *Message {
+	return &Message{Type: "EXPIRE", Src: src, Dst: dst}
+}
+
 func NewOpenMessage() *Message {
 	return &Message{Type: "OPEN"}
 }

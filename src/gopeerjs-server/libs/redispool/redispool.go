@@ -5,21 +5,13 @@ import (
 	"time"
 )
 
-func NewPool(server string, db int, password string) *redis.Pool {
+func NewPool(url string) *redis.Pool {
 	return &redis.Pool{
 		MaxIdle: 3,
 		IdleTimeout: 240 * time.Second,
 		Dial: func () (redis.Conn, error) {
-			c, err := redis.Dial("tcp", server)
+			c, err := redis.DialURL(url)
 			if err != nil {
-				return nil, err
-			}
-			if _, err := c.Do("SELECT", db); err != nil {
-				c.Close()
-				return nil, err
-			}
-			if _, err := c.Do("AUTH", password); err != nil {
-				c.Close()
 				return nil, err
 			}
 			return c, err

@@ -7,12 +7,12 @@ import (
 	"gopeerjs-server/peerhub"
 	"gopeerjs-server/libs/redispool"
 	"regexp"
+	"github.com/streadway/amqp"
 )
 
 var (
-	redisAddress = "0.0.0.0:6379"
-	redisDB = 0
-	redisPassword = ""
+	redisAddress = "redis://0.0.0.0:6379/0"
+	amqpAddress = "amqp://guest:guest@0.0.0.0:5672/"
 
 	address = ":8888"
 	path = ""
@@ -26,12 +26,17 @@ func init() {
 
 func main() {
 	log := logger.New()
-	redis := redispool.NewPool(redisAddress, redisDB, redisPassword)
-
-	peerHub := peerhub.NewHub(redis)
 
 	log.Info("Start")
 
+	redisPool := redispool.NewPool(redisAddress)
+	amqpConn, err := amqp.Dial(amqpAddress)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	peerHub := peerhub.NewHub(redisPool, amqpConn)
+	go peerHub.Run()
 
 	reWs, _ := regexp.Compile("^" + path + "/peerjs" + "$")
 	reId, _ := regexp.Compile("^" + path + "/([^/]+)/id" + "$");

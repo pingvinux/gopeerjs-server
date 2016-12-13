@@ -25,7 +25,7 @@ func WebsocketHandler(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub, logger *lo
 	var token = string(ctx.FormValue("token"))
 	var ip = ctx.RemoteAddr()
 
-	if _, err := hub.CheckKey(key); err != nil {
+	if _, err := peerhub.CheckKey(key); err != nil {
 		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
 		return
 	}
@@ -77,7 +77,6 @@ func WebsocketHandler(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub, logger *lo
 
 		hub.AddPeer(client)
 
-		go client.ReadPump()
-		client.WritePump()
+		client.Wait()
 	})
 }
