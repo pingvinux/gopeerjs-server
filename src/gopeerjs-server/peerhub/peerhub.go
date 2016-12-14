@@ -2,43 +2,31 @@ package peerhub
 
 import (
 	"github.com/garyburd/redigo/redis"
-	"time"
 	"encoding/json"
 	"sync"
-	"gopeerjs-server/libs/logger"
 	"github.com/streadway/amqp"
 )
 
-const (
-	AMQP_MESSAGE_EXCHANGE = "peer-messages"
-
-	REDIS_MESSAGE_STORAGE = "tmpmessage:%s"
-	REDIS_MESSAGE_TTL = 5 // Message TTL in seconds
-
-	WS_WRITE_WAIT = 5 * time.Second // Websocket write timeout
-)
 
 var (
-	log = logger.New()
+	AMQP_MESSAGE_EXCHANGE = "peer-messages"
+	AMQP_MESSAGE_TTL = "5000"
 )
+
 
 type PeerHub struct {
 	sync.RWMutex
 
-	redisPool  *redis.Pool
-	amqpConn   *amqp.Connection
 	peers      map[string]*PeerClient
 
+	redisPool  *redis.Pool
+	amqpConn   *amqp.Connection
 	transmitMessage chan *Message
 }
 
 func (h *PeerHub) GetPeer(id string) *PeerClient {
-	log.Info("[PeerHub] GetPeer")
-
 	h.RLock()
 	defer h.RUnlock()
-
-	log.Infof("[PeerHub] GetPeer. peer_id=%s", id)
 
 	if cl, ok := h.peers[id]; ok == true {
 		return cl
@@ -47,12 +35,8 @@ func (h *PeerHub) GetPeer(id string) *PeerClient {
 }
 
 func (h *PeerHub) AddPeer(client *PeerClient) {
-	log.Info("[PeerHub] AddPeer")
-
 	h.Lock()
 	defer h.Unlock()
-
-	log.Infof("[PeerHub] AddPeer. peer=%+v", client)
 
 	if _, ok := h.peers[client.Id]; ok == false {
 		h.peers[client.Id] = client
@@ -60,12 +44,8 @@ func (h *PeerHub) AddPeer(client *PeerClient) {
 }
 
 func (h *PeerHub) RemovePeer(id string) {
-	log.Info("[PeerHub] RemovePeer")
-
 	h.Lock()
 	defer h.Unlock()
-
-	log.Infof("[PeerHub] Remove Peer. peer_id=%s", id)
 
 	if _, ok := h.peers[id]; ok == true {
 		delete(h.peers, id)
@@ -74,11 +54,7 @@ func (h *PeerHub) RemovePeer(id string) {
 
 
 func (h *PeerHub) TransmitMessage(message *Message) {
-	log.Info("[PeerHub] TransmitMessage")
-
 	h.transmitMessage <- message
-
-	log.Infof("[PeerHub] TransmitMessage. Send")
 }
 
 func (h *PeerHub) Run() {
@@ -98,7 +74,6 @@ func (h *PeerHub) Run() {
 	for {
 		select {
 		case amqpMessage := <-returnQueue:
-			log.Infof("[PeerHub] not delivered. %+v", amqpMessage)
 			if amqpMessage.ReplyCode > 0 {
 				var message Message
 				if err := json.Unmarshal(amqpMessage.Body, &message); err == nil {
@@ -106,30 +81,48 @@ func (h *PeerHub) Run() {
 						var msg = NewExpireMessage(message.Dst, message.Src)
 						cl.outMessages <- msg
 					}
-				} else {
-					log.Infof("[PeerHub] not delivered message. unmarshal error %s", err)
 				}
 			}
 		case clientMessage := <-h.transmitMessage:
-			var src = clientMessage.Src
-			var dst = clientMessage.Dst
+			var dst string
+			var msg *Message
+
+			switch clientMessage.Type {
+			case "LEAVE":
+				fallthrough
+			case "CANDIDATE":
+				fallthrough
+			case "OFFER":
+				fallthrough
+			case "ANSWER":
+				dst = clientMessage.Dst
+				msg = &Message{
+					Type: clientMessage.Type,
+					Src: clientMessage.Src,
+					Dst: clientMessage.Dst,
+					Payload: clientMessage.Payload,
+				}
+			default:
+				dst = clientMessage.Src
+				msg = NewErrorMessage(ERROR_MESSAGE_TAKEN)
+			}
+
+
 			var cl = h.GetPeer(dst)
-
-			log.Infof("[PeerHub] TransmitMessage from %s to %s", src, dst)
-
 			if cl != nil && cl.IsConnected() {
-				log.Infof("[PeerHub] TransmitMessage from %s to %s. transmit to client", src, dst)
+				//log.Printf("[peerHub] transmit-local message=%s from %s to %s", msg.Type, msg.Src, msg.Dst)
 
-				cl.outMessages <- clientMessage
+				cl.outMessages <- msg
 			} else {
-				log.Infof("[PeerHub] TransmitMessage from %s to %s. transmit to rabbitmq", src, dst)
+				//log.Printf("[peerHub] transmit-remote message=%s from %s to %s", msg.Type, msg.Src, msg.Dst)
+
 				err := ch.Publish(AMQP_MESSAGE_EXCHANGE, dst, true, false, amqp.Publishing{
 					ContentType: "application/json",
-					Expiration: "5000",
-					Body: clientMessage.Bytes(),
+					Expiration: AMQP_MESSAGE_TTL,
+					Body: msg.Bytes(),
 				})
 				if err != nil {
-					log.Infof("[PeerHub] TransmitMessage from %s to %s. error = %s", src, dst, err)
+					panic(err)
 				}
 			}
 		}
@@ -144,11 +137,3 @@ func NewHub(redisPool *redis.Pool, amqpConn *amqp.Connection) *PeerHub {
 		transmitMessage: make(chan *Message),
 	}
 }
-
-
-
-
-
-
-
-

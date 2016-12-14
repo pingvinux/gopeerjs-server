@@ -6,7 +6,14 @@ const (
 	ERROR_WS = "No id, token, or key supplied to websocket server"
 	ERROR_ID_TAKEN = "ID is taken"
 	ERROR_KEY_TAKEN = "Invalid key provided"
+	ERROR_MESSAGE_TAKEN = "Invalid message taken"
+
+	MESSAGE_OFFER = "OFFER"
+	MESSAGE_ANSWER = "ANSWER"
+	MESSAGE_CANDIDATE = "CANDIDATE"
+	MESSAGE_LEAVE = "LEAVE"
 )
+
 
 type Message struct {
 	Type string `json:"type"`

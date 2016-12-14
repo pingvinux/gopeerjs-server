@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	writeWait = 5 * time.Second // Websocket write timeout
 	newline = []byte("\n")
 	space = []byte(" ")
 )
@@ -18,17 +19,18 @@ var (
 type PeerClient struct {
 	sync.Mutex
 
-	Id           string
-	Key          string
-	Token        string
-	IP           net.Addr
-	isOpen       bool
+	Id          string
+	Key         string
+	Token       string
+	IP          net.Addr
 
-	hub          *PeerHub
-	wsConn       *websocket.Conn
-	outMessages  chan *Message
-	close        chan bool
-	closeQueue   chan bool
+	isOpen      bool
+	hub         *PeerHub
+	wsConn      *websocket.Conn
+	outMessages chan *Message
+	closeOk     chan bool
+	closeError  chan error
+	closeQueue  chan bool
 }
 
 func (c *PeerClient) SetConnection(conn *websocket.Conn) {
@@ -60,39 +62,30 @@ func (c *PeerClient) Open() bool {
 }
 
 func (c *PeerClient) QueuePump() {
-	log.Infof("[PeerClient][%s] Start QueuePump", c.Id)
-
 	var ch *amqp.Channel
 	var queue amqp.Queue
 	var err error
 
 	if ch, err = c.hub.amqpConn.Channel(); err != nil {
-		log.Infof("[PeerClient][%s] QueuePump. Error=%s", c.Id, err)
-
-		c.close <- true
+		c.closeError <- err
 		return
 	}
 	defer func() {
 		ch.Close()
-
-		log.Infof("[PeerClient][%s] Close QueuePump", c.Id)
 	}()
 
 	if err := ch.ExchangeDeclare(AMQP_MESSAGE_EXCHANGE, amqp.ExchangeDirect, true, false, false, false, nil); err != nil {
-		log.Infof("[PeerClient][%s] QueuePump. Error=%s", c.Id, err)
-		c.close <- true
+		c.closeError <- err
 		return
 	}
 
 	if queue, err = ch.QueueDeclare("", false, true, true, false, nil); err != nil {
-		log.Infof("[PeerClient][%s] QueuePump. Error=%s", c.Id, err)
-		c.close <- true
+		c.closeError <- err
 		return
 	}
 
 	if err := ch.QueueBind(queue.Name, c.Id, AMQP_MESSAGE_EXCHANGE, false, nil); err != nil {
-		log.Infof("[PeerClient][%s] QueuePump. Error=%s", c.Id, err)
-		c.close <- true
+		c.closeError <- err
 		return
 	}
 
@@ -106,23 +99,15 @@ func (c *PeerClient) QueuePump() {
 		nil, // args
 	)
 	if err != nil {
-		log.Infof("[PeerClient][%s] QueuePump. Error=%s", c.Id, err)
-		c.close <- true
+		c.closeError <- err
 		return
 	}
 
 	go func() {
 		for msg := range amqpMessages {
 			var message Message
-			if err := json.Unmarshal(msg.Body, &message); err != nil {
-				log.Info("[PeerClient] QueuePump. unmarshal error=%s", err)
-				continue
-			}
-			if message.Type != "LEAVE" {
+			if err := json.Unmarshal(msg.Body, &message); err == nil {
 				c.outMessages <- &message
-			} else {
-				c.close <- true
-				return
 			}
 		}
 	}()
@@ -131,80 +116,42 @@ func (c *PeerClient) QueuePump() {
 }
 
 func (c *PeerClient) ReadPump() {
-	defer func(){
-		log.Infof("[PeerClient][%s] Close ReadPump", c.Id)
-	}()
-
-	log.Infof("[PeerClient][%s] Start ReadPump", c.Id)
-
 	for {
 		_, message, err := c.wsConn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-				log.Printf("error: %v", err)
-			}
+			//if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+			//	log.Printf("error: %v", err)
+			//}
 
-			log.Infof("[PeerClient][%s] ReadPump. read error=%s", c.Id, err)
-
-			// You should send the closed message to the close channel,
-			// otherwise, the server will be crashed.
-			c.close <- true
+			c.closeError <- err
 			return
 		}
 
 		message = bytes.TrimSpace(bytes.Replace(message, newline, space, -1))
-		log.Infof("[PeerClient][%s] ReadPump. raw_message=%s", c.Id, message)
+
+		//log.Printf("[peerClient][%s] Read message=%s", c.Id, message)
 
 		var clientMessage Message
 		if err := json.Unmarshal(message, &clientMessage); err != nil {
-			log.Infof("[PeerClient][%s] ReadPump. unmarshal error=%s", c.Id, err)
+			//log.Printf("[peerClient][%s] Unmarshal error=%s", c.Id, err)
 			continue
 		}
 
-		log.Infof("[PeerClient][%s] ReadPump. message=%+v", c.Id, clientMessage)
+		clientMessage.Src = c.Id
 
-		switch clientMessage.Type {
-		case "LEAVE":
-			fallthrough
-		case "CANDIDATE":
-			fallthrough
-		case "OFFER":
-			fallthrough
-		case "ANSWER":
-			msg := &Message{
-				Type: clientMessage.Type,
-				Src: c.Id,
-				Dst: clientMessage.Dst,
-				Payload: clientMessage.Payload,
-			}
+		c.hub.transmitMessage <- &clientMessage
 
-			log.Infof("[PeerClient][%s] ReadPump. send to c.hub.transmitMessage", c.Id)
-
-			c.hub.transmitMessage <- msg
-
-			log.Infof("[PeerClient][%s] ReadPump. send to c.hub.transmitMessage end", c.Id)
-		default:
-		// Error Message unrecognized
-		}
+		//log.Printf("[peerClient][%s] Send to hub message=%s", c.Id, message)
 	}
 }
 
 func (c *PeerClient) write(mt int, payload []byte) error {
-	c.wsConn.SetWriteDeadline(time.Now().Add(WS_WRITE_WAIT))
+	c.wsConn.SetWriteDeadline(time.Now().Add(writeWait))
 	return c.wsConn.WriteMessage(mt, payload)
 }
 
-func (c *PeerClient) Write(playload []byte) error {
-	return c.write(websocket.TextMessage, playload)
-}
-
 func (c *PeerClient) WritePump() {
-	defer func() {
-		c.wsConn.Close()
-		log.Infof("[PeerClient][%s] Close WritePump", c.Id)
-	}()
-
-	log.Infof("[PeerClient][%s] Start WritePump", c.Id)
+	defer c.wsConn.Close()
 
 	for {
 		message, ok := <-c.outMessages
@@ -214,22 +161,38 @@ func (c *PeerClient) WritePump() {
 			return
 		}
 
-		c.wsConn.SetWriteDeadline(time.Now().Add(WS_WRITE_WAIT))
+		//log.Printf("[peerClient][%s] Got message=%s", c.Id, message.Bytes())
+
+		if message.Type == MESSAGE_LEAVE && message.Dst == c.Id {
+			c.write(websocket.CloseMessage, []byte{})
+			c.closeOk <- true
+			return
+		}
+
+
+		c.wsConn.SetWriteDeadline(time.Now().Add(writeWait))
 		w, err := c.wsConn.NextWriter(websocket.TextMessage)
 		if err != nil {
-			log.Infof("[PeerClient][%s] WritePump. write error=%s", c.Id, err)
+			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
 
+			c.closeError <- err
 			return
 		}
+		if _, err := w.Write(message.Bytes()); err != nil {
+			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
 
-		w.Write(message.Bytes())
-
-		log.Infof("[PeerClient][%s] WritePump. write message=%s", c.Id, message)
+			c.closeError <- err
+			return
+		}
 
 		if err := w.Close(); err != nil {
-			log.Infof("[PeerClient][%s] WritePump. write error=%s", c.Id, err)
+			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
+
+			c.closeError <- err
 			return
 		}
+
+		//log.Printf("[peerClient][%s] Write message=%s", c.Id, message.Bytes())
 	}
 }
 
@@ -238,23 +201,33 @@ func (c *PeerClient) WriteClose() {
 	c.wsConn.Close()
 }
 
-func (c *PeerClient) Wait() {
-
+func (c *PeerClient) Wait() error {
 	go c.QueuePump()
 	go c.ReadPump()
 	go c.WritePump()
 
-	<-c.close
+	var err error
+
+	waitLoop:
+	for {
+		select {
+		case <- c.closeOk:
+			break waitLoop
+		case err = <-c.closeError:
+			break waitLoop
+		}
+	}
 
 	c.hub.RemovePeer(c.Id)
 
-	log.Infof("[PeerClient][%s] Wiat. Close peer", c.Id)
 	if c.closeQueue != nil {
 		close(c.closeQueue)
 	}
 	if c.outMessages != nil {
 		close(c.outMessages)
 	}
+
+	return err
 }
 
 func NewClient(id string, key string, token string, ip net.Addr, hub *PeerHub, conn *websocket.Conn) *PeerClient {
@@ -266,7 +239,8 @@ func NewClient(id string, key string, token string, ip net.Addr, hub *PeerHub, c
 		hub: hub,
 		wsConn: conn,
 		outMessages: make(chan *Message),
-		close: make(chan bool),
+		closeOk: make(chan bool),
+		closeError: make(chan error),
 		closeQueue: make(chan bool),
 	}
 }
