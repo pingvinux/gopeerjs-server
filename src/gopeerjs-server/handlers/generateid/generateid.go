@@ -31,12 +31,17 @@ func Match(ctx *fasthttp.RequestCtx) bool {
 }
 
 func Handle(ctx *fasthttp.RequestCtx) {
-	key, _ := ctx.UserValue("key").(string)
+	keyToken, _ := ctx.UserValue("key").(string)
 
-	if _, err := peerhub.CheckKey(key); err != nil {
+	if _, err := peerhub.Token2Key(keyToken); err != nil {
+		if debug {
+			logger.Errorf("[%s] %s", handlerName, err)
+		}
+
 		ctx.SetStatusCode(fasthttp.StatusUnauthorized)
 		return
 	}
+
 
 	uuid := peerhub.GeneratePeerId()
 

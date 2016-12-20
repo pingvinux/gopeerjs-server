@@ -52,7 +52,7 @@ func Handle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 
-	if _, err := peerhub.CheckKey(key); err != nil {
+	if _, err := peerhub.Token2Key(key); err != nil {
 		if debug {
 			logger.Errorf("[%s][%s] Error=%s", handlerName, id, err)
 		}
@@ -86,7 +86,6 @@ func Handle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 		ctx.SetBody(msg.Bytes())
 		return
 	}
-
 
 	hub.TransmitMessage(&message)
 }

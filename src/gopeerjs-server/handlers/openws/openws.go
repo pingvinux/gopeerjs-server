@@ -26,7 +26,7 @@ func write(conn *websocket.Conn, msg []byte) error {
 	return conn.WriteMessage(websocket.TextMessage, msg)
 }
 
-func wrireClose(conn *websocket.Conn, msg []byte) {
+func writeClose(conn *websocket.Conn, msg []byte) {
 	conn.WriteMessage(websocket.TextMessage, msg)
 	conn.WriteMessage(websocket.CloseMessage, []byte{})
 	conn.Close()
@@ -60,17 +60,19 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 				logger.Errorf("[%s] Error=%s", handlerName, id, msg.String())
 			}
 
-			wrireClose(conn, msg.Bytes())
+			writeClose(conn, msg.Bytes())
 			return
 		}
-		if _, err := peerhub.CheckKey(key); err != nil {
+
+		peerKey, err := peerhub.Token2Key(key)
+		if err != nil {
 			var msg = peerhub.NewErrorMessage(peerhub.ERROR_KEY_TAKEN)
 
 			if debug {
-				logger.Errorf("[%s] Error=%s", handlerName, msg.String())
+				logger.Errorf("[%s] Error=%s", handlerName, err)
 			}
 
-			wrireClose(conn, msg.Bytes())
+			writeClose(conn, msg.Bytes())
 			return
 		}
 
@@ -88,7 +90,7 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 				logger.Infof("[%s][%s] Ceate new peer", handlerName, id)
 			}
 
-			client = peerhub.NewClient(id, key, token, ip, hub, conn)
+			client = peerhub.NewClient(id, peerKey.Key, token, ip, hub, conn)
 		}
 
 
@@ -100,7 +102,7 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 				logger.Errorf("[%s][%s] Error=%s", handlerName, client.Id, msg.String())
 			}
 
-			wrireClose(conn, msg.Bytes())
+			writeClose(conn, msg.Bytes())
 			return
 		}
 
@@ -120,8 +122,7 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 		}
 
 		hub.AddPeer(client)
-		err := client.Wait()
-		if err != nil {
+		if err := client.Wait(); err != nil {
 			logger.Errorf("[%s][%s] Error=%s", handlerName, client.Id, err)
 		}
 		if debug {

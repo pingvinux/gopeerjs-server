@@ -45,7 +45,12 @@ func Handle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 	ctx.Response.Header.Set("Content-type", "application/octet-stream")
 	ctx.Response.SetStatusCode(fasthttp.StatusOK)
 
-	if _, err := peerhub.CheckKey(key); err != nil {
+	peerKey, err := peerhub.Token2Key(key)
+	if err != nil {
+		if debug {
+			logger.Errorf("[%s] %s", handlerName, err)
+		}
+
 		ctx.SetBodyString(peerhub.NewHttpErrorMessage().String())
 		return
 	}
@@ -63,7 +68,7 @@ func Handle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 			logger.Infof("[%s][%s] Create new peer", handlerName, id)
 		}
 
-		client = peerhub.NewClient(id, key, token, ip, hub, nil)
+		client = peerhub.NewClient(id, peerKey.Key, token, ip, hub, nil)
 		hub.AddPeer(client)
 	}
 

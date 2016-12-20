@@ -13,6 +13,7 @@ import (
 	"github.com/garyburd/redigo/redis"
 	"time"
 	"gopeerjs-server/config"
+	"gopeerjs-server/handlers/generatekey"
 )
 
 
@@ -56,6 +57,8 @@ func main() {
 		switch {
 		case generateid.Match(ctx):
 			generateid.Handle(ctx)
+		case generatekey.Match(ctx):
+			generatekey.Handle(ctx)
 		case open.Match(ctx):
 			open.Handle(ctx, peerHub)
 		case openws.Match(ctx):

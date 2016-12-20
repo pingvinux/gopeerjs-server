@@ -12,9 +12,11 @@ var (
 	AppRedisUrl = ""
 	AppAmqpUrl = ""
 
+	AppKey = "43lN9ZyE_jqWvL_fmYZnoqO5bD7X42QV"
+	AppSecretKey = []byte("wOr_agKfOzmeW71w-XX-elPiBXcKFikrakH792zQhuzo4oIzJozhPtMtGiUmxfH42MH8KlB2WAGZF-44eGnEQZG24k1Rx")
+
 	Debug bool
 	Logger *logrus.Logger
-
 )
 
 func init() {
