@@ -18,7 +18,7 @@ var (
 func Match(ctx *fasthttp.RequestCtx) bool {
 	if ctx.IsGet() {
 		if m := rePath.FindSubmatch(ctx.URI().Path()); len(m) > 0 {
-			ctx.SetUserValue("key", m[1])
+			ctx.SetUserValue("key", string(m[1]))
 
 			if debug {
 				logger.Infof("[%s] Match. %s %s", handlerName, ctx.Method(), ctx.URI())
@@ -32,6 +32,10 @@ func Match(ctx *fasthttp.RequestCtx) bool {
 
 func Handle(ctx *fasthttp.RequestCtx) {
 	keyToken, _ := ctx.UserValue("key").(string)
+
+	if debug {
+		logger.Infof("[%s] token=%s", handlerName, keyToken)
+	}
 
 	if _, err := peerhub.Token2Key(keyToken); err != nil {
 		if debug {

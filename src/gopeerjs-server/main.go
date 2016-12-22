@@ -14,6 +14,7 @@ import (
 	"time"
 	"gopeerjs-server/config"
 	"gopeerjs-server/handlers/generatekey"
+	"gopeerjs-server/handlers/peers"
 )
 
 
@@ -65,6 +66,8 @@ func main() {
 			openws.Handle(ctx, peerHub)
 		case message.Match(ctx):
 			message.Handle(ctx, peerHub)
+		case peers.Match(ctx):
+			peers.Handle(ctx, peerHub)
 		default:
 			if config.Debug {
 				config.Logger.Infof("[NotFound] %s %s", ctx.Method(), ctx.URI().Path())

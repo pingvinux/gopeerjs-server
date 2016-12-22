@@ -12,6 +12,7 @@ import (
 
 var (
 	writeWait = 5 * time.Second // Websocket write timeout
+	peerUpdate = 5 * time.Second // update peers list
 	newline = []byte("\n")
 	space = []byte(" ")
 )
@@ -28,9 +29,7 @@ type PeerClient struct {
 	hub         *PeerHub
 	wsConn      *websocket.Conn
 	outMessages chan *Message
-	closeOk     chan bool
-	closeError  chan error
-	closeQueue  chan bool
+	close       chan error
 }
 
 func (c *PeerClient) SetConnection(conn *websocket.Conn) {
@@ -61,69 +60,15 @@ func (c *PeerClient) Open() bool {
 	return false
 }
 
-func (c *PeerClient) QueuePump() {
-	var ch *amqp.Channel
-	var queue amqp.Queue
-	var err error
-
-	if ch, err = c.hub.amqpConn.Channel(); err != nil {
-		c.closeError <- err
-		return
-	}
-	defer func() {
-		ch.Close()
-	}()
-
-	if err := ch.ExchangeDeclare(AMQP_MESSAGE_EXCHANGE, amqp.ExchangeDirect, true, false, false, false, nil); err != nil {
-		c.closeError <- err
-		return
-	}
-
-	if queue, err = ch.QueueDeclare("", false, true, true, false, nil); err != nil {
-		c.closeError <- err
-		return
-	}
-
-	if err := ch.QueueBind(queue.Name, c.Id, AMQP_MESSAGE_EXCHANGE, false, nil); err != nil {
-		c.closeError <- err
-		return
-	}
-
-	amqpMessages, err := ch.Consume(
-		queue.Name, // queue
-		"", // consumer
-		true, // auto ack
-		false, // exclusive
-		false, // no local
-		false, // no wait
-		nil, // args
-	)
-	if err != nil {
-		c.closeError <- err
-		return
-	}
-
-	go func() {
-		for msg := range amqpMessages {
-			var message Message
-			if err := json.Unmarshal(msg.Body, &message); err == nil {
-				c.outMessages <- &message
-			}
-		}
-	}()
-
-	<- c.closeQueue
-}
-
 func (c *PeerClient) ReadPump() {
 	for {
 		_, message, err := c.wsConn.ReadMessage()
 		if err != nil {
-			//if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-			//	log.Printf("error: %v", err)
-			//}
-
-			c.closeError <- err
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+				c.close <- err
+			} else {
+				c.close <- nil
+			}
 			return
 		}
 
@@ -139,7 +84,7 @@ func (c *PeerClient) ReadPump() {
 
 		clientMessage.Src = c.Id
 
-		c.hub.transmitMessage <- &clientMessage
+		c.hub.peerMessage <- &clientMessage
 
 		//log.Printf("[peerClient][%s] Send to hub message=%s", c.Id, message)
 	}
@@ -153,7 +98,70 @@ func (c *PeerClient) write(mt int, payload []byte) error {
 func (c *PeerClient) WritePump() {
 	defer c.wsConn.Close()
 
+	var ch *amqp.Channel
+	var queue amqp.Queue
+	var err error
+
+	if ch, err = c.hub.amqpConn.Channel(); err != nil {
+		c.close <- err
+		return
+	}
+	defer ch.Close()
+
+	if err := ch.ExchangeDeclare(AMQP_MESSAGE_EXCHANGE, amqp.ExchangeDirect, true, false, false, false, nil); err != nil {
+		c.close <- err
+		return
+	}
+
+	if queue, err = ch.QueueDeclare("", false, true, true, false, nil); err != nil {
+		c.close <- err
+		return
+	}
+
+	if err := ch.QueueBind(queue.Name, c.Id, AMQP_MESSAGE_EXCHANGE, false, nil); err != nil {
+		c.close <- err
+		return
+	}
+
+	amqpMessages, err := ch.Consume(
+		queue.Name, // queue
+		"", // consumer
+		true, // auto ack
+		false, // exclusive
+		false, // no local
+		false, // no wait
+		nil, // args
+	)
+	if err != nil {
+		c.close <- err
+		return
+	}
+	go func() {
+		for msg := range amqpMessages {
+			var message Message
+			if err := json.Unmarshal(msg.Body, &message); err == nil {
+				if message.Type == MESSAGE_UPDATE {
+					peers := make([]string, 0)
+					if pl, err := c.hub.GetAllPeer(c.Key); err == nil {
+						delete(pl, c.Id)
+						for peerId := range pl {
+							peers = append(peers, peerId)
+						}
+					}
+
+					if len(peers) > 0 {
+						c.outMessages <- NewMessage("", c.Id, MESSAGE_PEERS, peers)
+					}
+				} else {
+					c.outMessages <- &message
+				}
+
+			}
+		}
+	}()
+
 	for {
+
 		message, ok := <-c.outMessages
 		if !ok {
 			// The hub closed the channel.
@@ -165,30 +173,29 @@ func (c *PeerClient) WritePump() {
 
 		if message.Type == MESSAGE_LEAVE && message.Dst == c.Id {
 			c.write(websocket.CloseMessage, []byte{})
-			c.closeOk <- true
+			c.close <- nil
 			return
 		}
-
 
 		c.wsConn.SetWriteDeadline(time.Now().Add(writeWait))
 		w, err := c.wsConn.NextWriter(websocket.TextMessage)
 		if err != nil {
 			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
 
-			c.closeError <- err
+			c.close <- err
 			return
 		}
 		if _, err := w.Write(message.Bytes()); err != nil {
 			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
 
-			c.closeError <- err
+			c.close <- err
 			return
 		}
 
 		if err := w.Close(); err != nil {
 			//log.Printf("[peerClient][%s] Write error=%s", c.Id, err)
 
-			c.closeError <- err
+			c.close <- err
 			return
 		}
 
@@ -202,27 +209,13 @@ func (c *PeerClient) WriteClose() {
 }
 
 func (c *PeerClient) Wait() error {
-	go c.QueuePump()
+	defer c.hub.RemovePeer(c.Id)
+
 	go c.ReadPump()
 	go c.WritePump()
 
-	var err error
+	err := <-c.close
 
-	waitLoop:
-	for {
-		select {
-		case <- c.closeOk:
-			break waitLoop
-		case err = <-c.closeError:
-			break waitLoop
-		}
-	}
-
-	c.hub.RemovePeer(c.Id)
-
-	if c.closeQueue != nil {
-		close(c.closeQueue)
-	}
 	if c.outMessages != nil {
 		close(c.outMessages)
 	}
@@ -239,8 +232,6 @@ func NewClient(id string, key string, token string, ip net.Addr, hub *PeerHub, c
 		hub: hub,
 		wsConn: conn,
 		outMessages: make(chan *Message),
-		closeOk: make(chan bool),
-		closeError: make(chan error),
-		closeQueue: make(chan bool),
+		close: make(chan error),
 	}
 }

@@ -12,6 +12,8 @@ const (
 	MESSAGE_ANSWER = "ANSWER"
 	MESSAGE_CANDIDATE = "CANDIDATE"
 	MESSAGE_LEAVE = "LEAVE"
+	MESSAGE_PEERS = "PEERS"
+	MESSAGE_UPDATE = "UPDATE-PEER"
 )
 
 
@@ -39,16 +41,18 @@ func (ml *MessageList) String() string {
 	return string(bytes)
 }
 
+func NewMessage(src, dst, msgType string, playload interface{}) *Message {
+	data, _ := json.Marshal(playload)
+	return &Message{
+		Type: msgType,
+		Src: src,
+		Dst: dst,
+		Payload: json.RawMessage(data),
+	}
+}
+
 func NewExpireMessage(src, dst string) *Message {
 	return &Message{Type: "EXPIRE", Src: src, Dst: dst}
-}
-
-func NewOpenMessage() *Message {
-	return &Message{Type: "OPEN"}
-}
-
-func NewHttpErrorMessage() *Message {
-	return &Message{Type: "HTTP-ERROR"}
 }
 
 func NewErrorMessage(msg string) *Message {
@@ -60,4 +64,16 @@ func NewErrorMessage(msg string) *Message {
 	tmpStr, _ := json.Marshal(tmp)
 
 	return &Message{Type: "ERROR", Payload: json.RawMessage(tmpStr)}
+}
+
+func NewOpenMessage() *Message {
+	return &Message{Type: "OPEN"}
+}
+
+func NewHttpErrorMessage() *Message {
+	return &Message{Type: "HTTP-ERROR"}
+}
+
+func NewUpdateMessage() *Message {
+	return &Message{Type: "UPDATE-PEER"}
 }

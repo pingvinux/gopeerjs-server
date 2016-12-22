@@ -50,17 +50,17 @@ func Token2Key(tokenString string) (*PeerKey, error) {
 
 	peerKey := &PeerKey{}
 	if v, ok := claims["vrs"]; ok == true {
-		peerKey.Version, _ = v.(int)
+		peerKey.Version = int(v.(float64))
 	}
 	if v, ok := claims["fky"]; ok == true {
-		peerKey.Key, _ = v.(string)
+		peerKey.Key = v.(string)
 	}
 
-	if peerKey.Version <= 0 || peerKey.Version >= KEY_VERSION {
-		return nil, fmt.Errorf("Invalis key version: %v", peerKey.Version)
+	if peerKey.Version <= 0 || peerKey.Version > KEY_VERSION {
+		return nil, fmt.Errorf("Invalid version value: %v", peerKey.Version)
 	}
 	if peerKey.Key == "" {
-		return nil, fmt.Errorf("Invalis key value: %v", peerKey.Key)
+		return nil, fmt.Errorf("Invalid key value: %v", peerKey.Key)
 	}
 
 	return peerKey, nil

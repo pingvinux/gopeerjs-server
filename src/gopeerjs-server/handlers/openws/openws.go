@@ -93,8 +93,6 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 			client = peerhub.NewClient(id, peerKey.Key, token, ip, hub, conn)
 		}
 
-
-
 		if client.Token != token {
 			var msg = peerhub.NewErrorMessage(peerhub.ERROR_ID_TAKEN)
 
@@ -126,7 +124,7 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 			logger.Errorf("[%s][%s] Error=%s", handlerName, client.Id, err)
 		}
 		if debug {
-			logger.Info("[%s][%s] Close WS connection", handlerName, client.Id)
+			logger.Infof("[%s][%s] Close WS connection", handlerName, client.Id)
 		}
 	})
 }
