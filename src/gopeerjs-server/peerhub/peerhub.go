@@ -7,32 +7,39 @@ import (
 	"github.com/streadway/amqp"
 	"fmt"
 	"time"
+	"strings"
+	"log"
 )
-
 
 var (
 	AMQP_MESSAGE_EXCHANGE = "peer-messages"
 	AMQP_MESSAGE_TTL = "5000"
 
 	REDIS_PEER_LIST = "peers:%s:%d"
+	REDIS_PEER_SEGMENTS = "segments:%s:%d"
 	REDIS_PEER_LIST_PREFIX = time.Now().Unix()
-	REDIS_PEER_LIST_TTL = 6*60*60
+	REDIS_PEER_LIST_TTL = 6 * 60 * 60
 )
 
 func redisPeersKey(key string) string {
 	return fmt.Sprintf(REDIS_PEER_LIST, key, REDIS_PEER_LIST_PREFIX)
 }
 
+func redisSegmentsKey(key string) string {
+	return fmt.Sprintf(REDIS_PEER_SEGMENTS, key, REDIS_PEER_LIST_PREFIX)
+}
+
 type PeerHub struct {
 	sync.RWMutex
 
-	peers       map[string]*PeerClient
+	peers        map[string]*PeerClient
 
-	redisPool   *redis.Pool
-	amqpConn    *amqp.Connection
-	peerMessage chan *Message
-	peerAdd	    chan *PeerClient
-	peerRemove  chan string
+	redisPool    *redis.Pool
+	amqpConn     *amqp.Connection
+	peerMessage  chan *Message
+	peerAdd      chan *PeerClient
+	peerSegments chan *PeerClient
+	peerRemove   chan *PeerClient
 }
 
 func (h *PeerHub) GetPeer(id string) *PeerClient {
@@ -50,8 +57,8 @@ func (h *PeerHub) AddPeer(client *PeerClient) error {
 	return nil
 }
 
-func (h *PeerHub) RemovePeer(id string) error {
-	h.peerRemove <- id
+func (h *PeerHub) RemovePeer(client *PeerClient) error {
+	h.peerRemove <- client
 	return nil
 }
 
@@ -60,6 +67,35 @@ func (h *PeerHub) GetAllPeer(key string) (map[string]string, error) {
 	defer conn.Close()
 
 	return redis.StringMap(conn.Do("HGETALL", redisPeersKey(key)))
+}
+
+func (h *PeerHub) GetAllSegments(key string) (map[string]string, error) {
+	conn := h.redisPool.Get()
+	defer conn.Close()
+
+	return redis.StringMap(conn.Do("HGETALL", redisSegmentsKey(key)))
+}
+
+func (h *PeerHub) UpdatePeerSegments(key, peerId string, segments []string) error {
+	conn := h.redisPool.Get()
+	defer conn.Close()
+
+	redisKey := redisSegmentsKey(key)
+
+	if _, err := conn.Do("MULTI"); err != nil {
+		return err
+	}
+	if _, err := conn.Do("HSET", redisKey, peerId, strings.Join(segments, ",")); err != nil {
+		return err
+	}
+	if _, err := conn.Do("EXPIRE", redisKey, REDIS_PEER_LIST_TTL); err != nil {
+		return err
+	}
+	if _, err := conn.Do("EXEC"); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (h *PeerHub) TransmitMessage(message *Message) {
@@ -103,43 +139,77 @@ func (h *PeerHub) Run() {
 					}
 				}
 			}
-		case peerAdd := <-h.peerAdd:
+		case peerClient := <-h.peerSegments:
+			conn := h.redisPool.Get()
+
+			segmentsStr, err := redis.String(conn.Do("HGET", redisSegmentsKey(peerClient.Key), peerClient.Id))
+			if err != nil && err != redis.ErrNil {
+				panic(err)
+			}
+
+			peers, err := redis.StringMap(conn.Do("HGETALL", redisPeersKey(peerClient.Key)))
+			if err != nil && err != redis.ErrNil {
+				panic(err)
+			}
+
+			if len(segmentsStr) > 0 && len(peers) > 1 {
+				delete(peers, peerClient.Id)
+
+				segments := map[string][]string{
+					peerClient.Id: strings.Split(segmentsStr, ","),
+				}
+				for peerId := range peers {
+					msg := NewMessage(peerClient.Id, peerId, "SEGMENTS", segments)
+					amqpSend(peerId, msg)
+				}
+			}
+			conn.Close()
+		case peerClient := <-h.peerAdd:
 			h.Lock()
-			if _, ok := h.peers[peerAdd.Id]; ok == false {
+			if _, ok := h.peers[peerClient.Id]; ok == false {
 				conn := h.redisPool.Get()
-				if _, err := conn.Do("HSET", redisPeersKey(peerAdd.Key), peerAdd.Id, peerAdd.Id); err != nil {
+
+				if _, err := conn.Do("HSET", redisPeersKey(peerClient.Key), peerClient.Id, ""); err != nil {
 					panic(err)
 				}
-				if _, err := conn.Do("EXPIRE", redisPeersKey(peerAdd.Key), REDIS_PEER_LIST_TTL); err != nil {
+				if _, err := conn.Do("EXPIRE", redisPeersKey(peerClient.Key), REDIS_PEER_LIST_TTL); err != nil {
 					panic(err)
 				}
 
-				peers, err := redis.StringMap(conn.Do("HGETALL", redisPeersKey(peerAdd.Key)))
+				h.peers[peerClient.Id] = peerClient
+
+				peers, err := redis.StringMap(conn.Do("HGETALL", redisPeersKey(peerClient.Key)))
 				if err != nil && err != redis.ErrNil {
 					panic(err)
 				}
-
 				if len(peers) > 1 {
 					msg := NewUpdateMessage()
 					for peerId := range peers {
+						log.Printf("Generate update message to %s", peerId)
+
 						amqpSend(peerId, msg)
 					}
 				}
-
-				h.peers[peerAdd.Id] = peerAdd
 				conn.Close()
 			}
 			h.Unlock()
-		case peerRemoveId := <-h.peerRemove:
-			h.Lock()
-			if peerRemove, ok := h.peers[peerRemoveId]; ok == true {
-				conn := h.redisPool.Get()
-				if _, err := conn.Do("HDEL", redisPeersKey(peerRemove.Key), peerRemove.Id); err != nil && err != redis.ErrNil {
-					panic(err)
-				}
 
-				delete(h.peers, peerRemove.Id)
+		case peerClient := <-h.peerRemove:
+			h.Lock()
+
+			if peerClient, ok := h.peers[peerClient.Id]; ok == true {
+				delete(h.peers, peerClient.Id)
 			}
+
+			conn := h.redisPool.Get()
+			if _, err := conn.Do("HDEL", redisPeersKey(peerClient.Key), peerClient.Id); err != nil && err != redis.ErrNil {
+				panic(err)
+			}
+			if _, err := conn.Do("HDEL", redisSegmentsKey(peerClient.Key), peerClient.Id); err != nil && err != redis.ErrNil {
+				panic(err)
+			}
+
+			conn.Close()
 			h.Unlock()
 		case peerMessage := <-h.peerMessage:
 			var dst string
@@ -182,6 +252,7 @@ func NewHub(redisPool *redis.Pool, amqpConn *amqp.Connection) *PeerHub {
 		peers: make(map[string]*PeerClient),
 		peerMessage: make(chan *Message),
 		peerAdd: make(chan *PeerClient),
-		peerRemove: make(chan string),
+		peerSegments: make(chan *PeerClient),
+		peerRemove: make(chan *PeerClient),
 	}
 }

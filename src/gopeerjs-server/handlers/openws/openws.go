@@ -5,6 +5,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"github.com/clevergo/websocket"
 	"gopeerjs-server/peerhub"
+	"strings"
 )
 
 var (
@@ -119,7 +120,39 @@ func Handle(ctx *fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 			}
 		}
 
+		go client.ReadPump()
+		go client.WritePump()
+
 		hub.AddPeer(client)
+
+		allPeers, _ := hub.GetAllPeer(client.Key)
+		if len(allPeers) > 0 {
+			delete(allPeers, client.Id)
+			if len(allPeers) > 0 {
+				peers := make([]string, 0);
+				for peerId := range allPeers {
+					peers = append(peers, peerId)
+				}
+
+				msg := peerhub.NewMessage("", "", peerhub.MESSAGE_PEERS, peers)
+				write(conn, msg.Bytes())
+			}
+		}
+
+		allSegments, _ := hub.GetAllSegments(client.Key)
+		if len(allSegments) > 0 {
+			delete(allSegments, client.Id)
+			if len(allSegments) > 0 {
+				segments := make(map[string][]string)
+				for peerId, peerSegments := range allSegments {
+					segments[peerId] = strings.Split(peerSegments, ",")
+				}
+
+				msg := peerhub.NewMessage("", "", peerhub.MESSAGE_SEGMENTS, segments)
+				write(conn, msg.Bytes())
+			}
+		}
+
 		if err := client.Wait(); err != nil {
 			logger.Errorf("[%s][%s] Error=%s", handlerName, client.Id, err)
 		}

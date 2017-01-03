@@ -8,24 +8,23 @@ import (
 	"encoding/json"
 	"sync"
 	"github.com/streadway/amqp"
+	"log"
 )
 
 var (
 	writeWait = 5 * time.Second // Websocket write timeout
-	peerUpdate = 5 * time.Second // update peers list
 	newline = []byte("\n")
 	space = []byte(" ")
 )
 
 type PeerClient struct {
-	sync.Mutex
-
-	Id          string
-	Key         string
-	Token       string
-	IP          net.Addr
+	Id          string `json:"id"`
+	Key         string `json:"key"`
+	Token       string `json:"token"`
+	IP          string `json:"ip"`
 
 	isOpen      bool
+	mutex       *sync.Mutex
 	hub         *PeerHub
 	wsConn      *websocket.Conn
 	outMessages chan *Message
@@ -33,15 +32,15 @@ type PeerClient struct {
 }
 
 func (c *PeerClient) SetConnection(conn *websocket.Conn) {
-	c.Lock()
-	defer c.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	c.wsConn = conn
 }
 
 func (c *PeerClient) IsConnected() bool {
-	c.Lock()
-	defer c.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	if c.wsConn != nil {
 		return true
@@ -50,8 +49,8 @@ func (c *PeerClient) IsConnected() bool {
 }
 
 func (c *PeerClient) Open() bool {
-	c.Lock()
-	defer c.Unlock()
+	c.mutex.Lock()
+	defer c.mutex.Unlock()
 
 	if c.isOpen == false {
 		c.isOpen = true
@@ -82,10 +81,18 @@ func (c *PeerClient) ReadPump() {
 			continue
 		}
 
-		clientMessage.Src = c.Id
+		if clientMessage.Type == MESSAGE_SEGMENTS {
+			var segments []string;
 
-		c.hub.peerMessage <- &clientMessage
-
+			if err := json.Unmarshal(clientMessage.Payload, &segments); err == nil {
+				if err := c.hub.UpdatePeerSegments(c.Key, c.Id, segments); err == nil {
+					c.hub.peerSegments <- c
+				}
+			}
+		} else {
+			clientMessage.Src = c.Id
+			c.hub.peerMessage <- &clientMessage
+		}
 		//log.Printf("[peerClient][%s] Send to hub message=%s", c.Id, message)
 	}
 }
@@ -140,7 +147,7 @@ func (c *PeerClient) WritePump() {
 		for msg := range amqpMessages {
 			var message Message
 			if err := json.Unmarshal(msg.Body, &message); err == nil {
-				if message.Type == MESSAGE_UPDATE {
+				if message.Type == MESSAGE_PEERS_UPDATE {
 					peers := make([]string, 0)
 					if pl, err := c.hub.GetAllPeer(c.Key); err == nil {
 						delete(pl, c.Id)
@@ -148,14 +155,13 @@ func (c *PeerClient) WritePump() {
 							peers = append(peers, peerId)
 						}
 					}
-
 					if len(peers) > 0 {
 						c.outMessages <- NewMessage("", c.Id, MESSAGE_PEERS, peers)
 					}
+					log.Printf("[%s] peers:%+v", c.Id, peers)
 				} else {
 					c.outMessages <- &message
 				}
-
 			}
 		}
 	}()
@@ -169,7 +175,7 @@ func (c *PeerClient) WritePump() {
 			return
 		}
 
-		//log.Printf("[peerClient][%s] Got message=%s", c.Id, message.Bytes())
+		log.Printf("[peerClient][%s] Got message=%s", c.Id, message.Bytes())
 
 		if message.Type == MESSAGE_LEAVE && message.Dst == c.Id {
 			c.write(websocket.CloseMessage, []byte{})
@@ -209,10 +215,7 @@ func (c *PeerClient) WriteClose() {
 }
 
 func (c *PeerClient) Wait() error {
-	defer c.hub.RemovePeer(c.Id)
-
-	go c.ReadPump()
-	go c.WritePump()
+	defer c.hub.RemovePeer(c)
 
 	err := <-c.close
 
@@ -228,7 +231,9 @@ func NewClient(id string, key string, token string, ip net.Addr, hub *PeerHub, c
 		Id: id,
 		Key: key,
 		Token: token,
-		IP: ip,
+		IP: ip.String(),
+
+		mutex: &sync.Mutex{},
 		hub: hub,
 		wsConn: conn,
 		outMessages: make(chan *Message),

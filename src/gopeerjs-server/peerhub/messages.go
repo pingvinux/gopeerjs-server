@@ -13,7 +13,8 @@ const (
 	MESSAGE_CANDIDATE = "CANDIDATE"
 	MESSAGE_LEAVE = "LEAVE"
 	MESSAGE_PEERS = "PEERS"
-	MESSAGE_UPDATE = "UPDATE-PEER"
+	MESSAGE_PEERS_UPDATE = "UPDATE-PEER"
+	MESSAGE_SEGMENTS = "SEGMENTS"
 )
 
 
@@ -57,7 +58,7 @@ func NewExpireMessage(src, dst string) *Message {
 
 func NewErrorMessage(msg string) *Message {
 	tmp := struct {
-		Msg string `json:msg`
+		Msg string `json:"msg"`
 	} {
 		Msg: msg,
 	}

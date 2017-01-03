@@ -85,7 +85,7 @@ func Handle(ctx * fasthttp.RequestCtx, hub *peerhub.PeerHub) {
 					logger.Infof("[%s][%s] Remove peer. Not connected to WebSocket", handlerName, client.Id)
 				}
 
-				hub.RemovePeer(client.Id)
+				hub.RemovePeer(client)
 			}
 		}()
 	} else {
